@@ -1,0 +1,1129 @@
+{
+  "name": "LAC Funding Scout (callscout-based)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                1
+              ],
+              "triggerAtHour": 7
+            }
+          ]
+        }
+      },
+      "id": "cda8793c-0b55-42ff-b5a1-2fd0bad6e3a2",
+      "name": "Weekly Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -2560,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1eyjsTU2vCzuXWeNNbgNkj0SC5Wk-ij7eAX--yiPGjkY",
+          "mode": "list",
+          "cachedResultName": "Opportunities",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1eyjsTU2vCzuXWeNNbgNkj0SC5Wk-ij7eAX--yiPGjkY/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Opportunities",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1eyjsTU2vCzuXWeNNbgNkj0SC5Wk-ij7eAX--yiPGjkY/edit#gid=0"
+        },
+        "options": {}
+      },
+      "id": "29129339-c4a5-4e46-a6e2-64e9b3c5de72",
+      "name": "Get Existing URLs",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -2336,
+        96
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "1jF5vBxFR6c8xCLE",
+          "name": "Paul Google credential"
+        }
+      },
+      "notes": "Reads the whole sheet just to pass its 'url' column to callscout as known_urls, so /discover can skip candidates already tracked."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// EDIT THIS LIST -- these are the pages callscout crawls for call-like links.\n// callscout ships with no hardcoded seed list on purpose (see its README): only\n// point it at pages you already know announce or list funding calls -- a\n// funder's own \"open calls\" page, an NGO grants directory, a DFI's RFP index.\nconst SEED_URLS = [\n  \"https://example-funder.org/open-calls\",\n  \"https://example-directory.org/grants\"\n];\n\nconst knownUrls = $input.all()\n  .map(item => item.json.url)\n  .filter(Boolean);\n\nreturn [{\n  json: {\n    seed_urls: SEED_URLS,\n    known_urls: knownUrls,\n    max_links_per_seed: 30,\n    only_same_domain: false,\n    use_llm_fallback: true\n  }\n}];\n"
+      },
+      "id": "b712ecbc-1159-42e3-97c4-970a903feb2d",
+      "name": "Build Discover Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2112,
+        96
+      ],
+      "notes": "SEED_URLS is the one thing you maintain by hand -- swap in your own real funder/directory pages."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://YOUR-CALLSCOUT-URL.onrender.com/discover",
+        "sendHeaders": true,
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "id": "a2efe03e-92d3-4493-9109-426d444c18ed",
+      "name": "Discover Funding Calls",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1888,
+        96
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "callscout"
+        }
+      },
+      "notes": "Replaces the Tavily 'Web Search' + Firecrawl 'Fetch Page' tool nodes entirely. Set the URL to your deployed callscout's /discover endpoint (see DEPLOY.md). Credential: HTTP Header Auth, header name 'X-API-Key', value = the CALLSCOUT_API_KEY set on the deployment. A JSON-array response is auto-split into one item per opportunity by n8n's HTTP Request node -- no separate Split Out node needed. Raise the 180s timeout further if a seed page yields many candidates."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.looks_like_call }}",
+              "rightValue": "True",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d4af4b6d-d412-4fb9-91e6-22d44d86761c",
+      "name": "Looks Like Call?",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [
+        -1664,
+        96
+      ],
+      "notes": "Drops anything callscout's looks_like_call flag marked false -- a page that doesn't read as a live, open call. Precision-first default matching callscout's own philosophy (a wrong row is worse than a missing one). To review these by hand instead of discarding them, swap this Filter for an IF node and route the false branch to its own 'needs review' tab."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "anthropicApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 1024,\n  \"system\": \"You are a funding-opportunity classifier for Save the Children's Global Ventures team (Innovative Finance). You are given one already-discovered, already-verified funding call (a tool found it, fetched it, and confirmed it reads as a live call with a deadline). Your only job is to classify it against Save the Children's mandate -- you do not need to verify dates or amounts, another tool already extracted those deterministically.\\n\\nTAXONOMY: catalytic capital, blended finance facilities, TA funds for project preparation, DFI/multilateral RFPs, and funding for child wellbeing, education, health, gender, financial inclusion, insurance/parametric insurance, or climate finance.\\n\\neligible_applicant_type: don't penalize for requiring a different lead applicant type or a consortium structure -- Save the Children can apply as a partner/co-applicant. Note that in this field rather than excluding for it.\\n\\nis_lac: true if eligible_geography includes Latin America, the Caribbean, or any LAC country, else false.\\nrelevance_score: 1-5, 5 = strongest possible fit against the taxonomy and mandate, 1 = weak/marginal.\\n\\nRespond with ONLY a single JSON object, no markdown fences, no prose before or after, with exactly these keys: name (string), issuing_org (string), eligible_geography (string), eligible_applicant_type (string), instrument_type (string), sector_focus (string), eligibility_summary (string, 1-2 sentences), relevance_score (integer 1-5), is_lac (boolean), status_signal (string: \\\"open\\\" or \\\"closed\\\", based on whether the deadline looks past or future).\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Classify this funding opportunity:\\n\\nTitle: {{ $json.title }}\\nURL: {{ $json.source_url }}\\nOpening date: {{ $json.opening_date }}\\nDeadline: {{ $json.deadline }}\\nAmount range: {{ $json.amount_range }}\\nPage summary: {{ $json.summary }}\"\n    }\n  ]\n}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "a1346d81-c0d2-429a-a168-277c9d2fe142",
+      "name": "Classify (Anthropic)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1440,
+        96
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "E3zkAZKsg2mH6A98",
+          "name": "Anthropic account 11"
+        }
+      },
+      "notes": "Replaces the LangChain agent + Structured Output Parser: a plain, single-shot call to Anthropic's Messages API per surviving candidate (not an agentic tool loop -- there's nothing left for it to fetch or search, callscout already did that deterministically). Reuses your existing 'Anthropic account 11' credential via n8n's Predefined Credential Type auth. If your n8n version doesn't offer 'Anthropic API' in the HTTP Request node's Predefined Credential Type list, switch authentication to Header Auth with header 'x-api-key' = your Anthropic key instead."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Anthropic's response is $json.content[0].text -- a JSON object as a string\n// (the system prompt asks for ONLY that, no markdown fences, but we strip\n// fences defensively in case the model adds them anyway).\nconst orig = $('Looks Like Call?').item.json;\n\nlet cls = {};\nlet classification_failed = false;\ntry {\n  const raw = ($json.content && $json.content[0] && $json.content[0].text) || '';\n  const cleaned = raw.trim().replace(/^```(json)?/i, '').replace(/```$/, '').trim();\n  cls = JSON.parse(cleaned);\n} catch (err) {\n  classification_failed = true;\n  cls = {\n    name: orig.title || orig.source_url,\n    issuing_org: '',\n    eligible_geography: '',\n    eligible_applicant_type: '',\n    instrument_type: '',\n    sector_focus: '',\n    eligibility_summary: 'Classification failed -- review manually. ' + String(err),\n    relevance_score: '',\n    is_lac: false,\n    status_signal: ''\n  };\n}\n\nreturn {\n  json: {\n    url: orig.source_url,\n    opening_date: orig.opening_date,\n    deadline: orig.deadline,\n    amount_range: orig.amount_range,\n    field_confidence: orig.field_confidence,\n    discovered_via_seed: orig.discovered_via_seed,\n    looks_like_call: orig.looks_like_call,\n    name: cls.name || orig.title || orig.source_url,\n    issuing_org: cls.issuing_org || '',\n    eligible_geography: cls.eligible_geography || '',\n    eligible_applicant_type: cls.eligible_applicant_type || '',\n    instrument_type: cls.instrument_type || '',\n    sector_focus: cls.sector_focus || '',\n    eligibility_summary: cls.eligibility_summary || '',\n    relevance_score: cls.relevance_score !== undefined ? cls.relevance_score : '',\n    is_lac: !!cls.is_lac,\n    status_signal: cls.status_signal || '',\n    classification_failed\n  }\n};\n"
+      },
+      "id": "d04c716c-6e03-40ba-a7fc-45c103342309",
+      "name": "Parse Classification + Merge",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1216,
+        96
+      ],
+      "notes": "Combines callscout's deterministic fields (date/amount, carried through unchanged) with the classifier's judgment fields. Falls back to a flagged, honest 'classification_failed' row rather than silently dropping a candidate if Anthropic's response isn't valid JSON."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const j = $input.item.json;\nconst raw = (j.deadline || '').toString().trim();\nconst parsed = raw ? new Date(raw) : null;\nconst isValidDate = parsed && !isNaN(parsed.getTime());\n\nlet deadline_display, days_to_deadline, deadline_was_estimated;\n\nif (isValidDate) {\n  deadline_display = raw;\n  days_to_deadline = Math.ceil((parsed - new Date()) / 86400000);\n  deadline_was_estimated = false;\n} else if (raw) {\n  deadline_display = raw;\n  days_to_deadline = null;\n  deadline_was_estimated = false;\n} else {\n  deadline_display = 'Not specified';\n  days_to_deadline = null;\n  deadline_was_estimated = true;\n}\n\nconst signal = (j.status_signal || '').toLowerCase();\nlet status = 'open';\nif (signal.includes('closed')) {\n  status = 'closed';\n} else if (days_to_deadline !== null && days_to_deadline < 0) {\n  status = 'closed';\n}\n\nreturn { json: { ...j, deadline_display, days_to_deadline, deadline_was_estimated, status,\n  date_added: new Date().toISOString().slice(0, 10), digest_sent: 'false' } };\n"
+      },
+      "id": "7b155e07-1ddb-4095-83f5-c3eb71e4337e",
+      "name": "Normalize Deadline",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -992,
+        96
+      ],
+      "notes": "Unchanged from the original workflow's node of the same name, other than reading from the merged fields above -- never fabricates a placeholder deadline, honestly flags deadline_was_estimated instead."
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1eyjsTU2vCzuXWeNNbgNkj0SC5Wk-ij7eAX--yiPGjkY",
+          "mode": "list",
+          "cachedResultName": "Opportunities",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1eyjsTU2vCzuXWeNNbgNkj0SC5Wk-ij7eAX--yiPGjkY/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Opportunities",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1eyjsTU2vCzuXWeNNbgNkj0SC5Wk-ij7eAX--yiPGjkY/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "name": "={{$json.name}}",
+            "issuing_org": "={{$json.issuing_org}}",
+            "url": "={{$json.url}}",
+            "opening_date": "={{$json.opening_date}}",
+            "deadline": "={{$json.deadline}}",
+            "amount_range": "={{$json.amount_range}}",
+            "instrument_type": "={{$json.instrument_type}}",
+            "eligibility_geography": "={{$json.eligible_geography}}",
+            "eligible_applicant_type": "={{$json.eligible_applicant_type}}",
+            "sector_focus": "={{$json.sector_focus}}",
+            "eligibility_summary": "={{$json.eligibility_summary}}",
+            "date_added": "={{$json.date_added}}",
+            "digest_sent": "={{$json.digest_sent}}",
+            "relevance_score": "={{$json.relevance_score}}",
+            "status": "={{$json.status}}",
+            "is_lac": "={{$json.is_lac}}"
+          },
+          "matchingColumns": [
+            "url"
+          ],
+          "schema": [
+            {
+              "id": "name",
+              "displayName": "name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "issuing_org",
+              "displayName": "issuing_org",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "url",
+              "displayName": "url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "opening_date",
+              "displayName": "opening_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "deadline",
+              "displayName": "deadline",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "amount_range",
+              "displayName": "amount_range",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "instrument_type",
+              "displayName": "instrument_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "eligibility_geography",
+              "displayName": "eligibility_geography",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "eligible_applicant_type",
+              "displayName": "eligible_applicant_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "sector_focus",
+              "displayName": "sector_focus",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "eligibility_summary",
+              "displayName": "eligibility_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "date_added",
+              "displayName": "date_added",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "digest_sent",
+              "displayName": "digest_sent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "relevance_score",
+              "displayName": "relevance_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "team_action",
+              "displayName": "team_action",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "ad04bb5f-1cd8-436c-9b38-97b51b41c066",
+      "name": "Upsert to Google Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -768,
+        96
+      ],
+      "retryOnFail": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "1jF5vBxFR6c8xCLE",
+          "name": "Paul Google credential"
+        }
+      },
+      "notes": "Same sheet/columns as before. field_confidence and classification_failed aren't written to the sheet by default -- add columns for them if you want that audit trail visible there too."
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1eyjsTU2vCzuXWeNNbgNkj0SC5Wk-ij7eAX--yiPGjkY",
+          "mode": "list",
+          "cachedResultName": "Opportunities",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1eyjsTU2vCzuXWeNNbgNkj0SC5Wk-ij7eAX--yiPGjkY/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Opportunities",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1eyjsTU2vCzuXWeNNbgNkj0SC5Wk-ij7eAX--yiPGjkY/edit#gid=0"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "digest_sent",
+              "lookupValue": "false"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b9c71a89-7ed0-4876-86e7-916b3d5b8877",
+      "name": "Get Undigested Rows",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -544,
+        96
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "1jF5vBxFR6c8xCLE",
+          "name": "Paul Google credential"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const seen = new Set();\nreturn $input.all().filter(item => {\n  const j = item.json;\n  if (!j.name || !j.url) return false;\n  const sentVal = (j.digest_sent || '').toString().toLowerCase().trim();\n  if (sentVal === 'true') return false;\n  const statusVal = (j.status || '').toString().toLowerCase().trim();\n  if (statusVal === 'closed') return false;\n  if (seen.has(j.url)) return false;\n  seen.add(j.url);\n  return true;\n});\n"
+      },
+      "id": "5e32bdb3-2746-47ac-9d19-be6d472e6476",
+      "name": "filter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -320,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nfunction hasCompleteInfo(j) {\n  const hasDate = !j.deadline_was_estimated && j.deadline_display && j.deadline_display !== 'Not specified';\n  const hasScore = j.relevance_score !== undefined && j.relevance_score !== null && j.relevance_score !== '';\n  return hasDate && hasScore;\n}\n\nitems.sort((a, b) => {\n  const aComplete = hasCompleteInfo(a.json) ? 1 : 0;\n  const bComplete = hasCompleteInfo(b.json) ? 1 : 0;\n  if (bComplete - aComplete !== 0) return bComplete - aComplete;\n\n  const aScore = Number(a.json.relevance_score) || 0;\n  const bScore = Number(b.json.relevance_score) || 0;\n  if (bScore - aScore !== 0) return bScore - aScore;\n\n  const aDeadline = (a.json.days_to_deadline === null || a.json.days_to_deadline === '') ? Infinity : Number(a.json.days_to_deadline);\n  const bDeadline = (b.json.days_to_deadline === null || b.json.days_to_deadline === '') ? Infinity : Number(b.json.days_to_deadline);\n  return aDeadline - bDeadline;\n});\n\nreturn items;\n"
+      },
+      "id": "e847fe22-ac22-43c2-ad6d-0b7b03b0c41b",
+      "name": "Sort Opportunities",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -96,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.days_to_deadline !== null && $json.days_to_deadline !== '' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              },
+              "id": "83d30e68-e583-4212-88f1-42bd90668fcd"
+            },
+            {
+              "leftValue": "={{ Number($json.days_to_deadline) }}",
+              "rightValue": 14,
+              "operator": {
+                "type": "number",
+                "operation": "lte"
+              },
+              "id": "c9b3108d-7ff1-4ca1-96a8-93fc5c2b7865"
+            },
+            {
+              "leftValue": "={{ Number($json.days_to_deadline) }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              },
+              "id": "845c8fdc-054f-4f6b-bbe5-d88d8deedf82"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "8c6d5800-91b9-44f8-898e-a6fbcf626820",
+      "name": "Deadline Within 2 Weeks?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        128,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nif (items.length === 0) return [];\n\nconst rows = items.map(item => {\n  const j = item.json;\n  const deadlineLabel = j.deadline_was_estimated\n    ? '<span style=\"color:#999;\">Not specified</span>'\n    : (j.deadline_display || j.deadline || 'Not specified');\n  const isClosed = j.status === 'closed';\n  const rowStyle = isClosed ? 'style=\"color:#999;text-decoration:line-through;\"' : '';\n  return `<tr ${rowStyle}>\n    <td>${j.name || ''}</td>\n    <td>${j.issuing_org || ''}</td>\n    <td>${deadlineLabel}</td>\n    <td>${j.instrument_type || ''}</td>\n    <td>${j.relevance_score || '\u2014'}</td>\n    <td>${j.status || 'open'}</td>\n    <td><a href=\"${j.url}\">Link</a></td>\n  </tr>`;\n}).join('\\n');\n\nconst html = `<h3>Urgent: Closing Within 2 Weeks (${items.length})</h3>\n<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\" style=\"border-collapse:collapse;\">\n<tr><th>Name</th><th>Org</th><th>Deadline</th><th>Instrument</th><th>Score</th><th>Status</th><th>Link</th></tr>\n${rows}\n</table>`;\n\nreturn [{ json: { emailHtml: html } }];\n"
+      },
+      "id": "41814eae-005c-4bfc-a1f1-9586d72c132a",
+      "name": "Build Urgent Table",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        352,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nif (items.length === 0) return [];\n\nconst rows = items.map(item => {\n  const j = item.json;\n  const deadlineLabel = j.deadline_was_estimated\n    ? '<span style=\"color:#999;\">Not specified</span>'\n    : (j.deadline_display || j.deadline || 'Not specified');\n  const isClosed = j.status === 'closed';\n  const rowStyle = isClosed ? 'style=\"color:#999;text-decoration:line-through;\"' : '';\n  return `<tr ${rowStyle}>\n    <td>${j.name || ''}</td>\n    <td>${j.issuing_org || ''}</td>\n    <td>${deadlineLabel}</td>\n    <td>${j.instrument_type || ''}</td>\n    <td>${j.relevance_score || '\u2014'}</td>\n    <td>${j.status || 'open'}</td>\n    <td><a href=\"${j.url}\">Link</a></td>\n  </tr>`;\n}).join('\\n');\n\nconst html = `<h3>Weekly LAC Funding Opportunities Digest (Global Ventures) (${items.length})</h3>\n<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\" style=\"border-collapse:collapse;\">\n<tr><th>Name</th><th>Org</th><th>Deadline</th><th>Instrument</th><th>Score</th><th>Status</th><th>Link</th></tr>\n${rows}\n</table>`;\n\nreturn [{ json: { emailHtml: html } }];\n"
+      },
+      "id": "662244bb-719d-4b73-a38c-c62b3f068368",
+      "name": "Build Digest Table",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        352,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "wainainawanjiku8@gmail.com",
+        "subject": "URGENT: LAC funding call closing within 2 weeks",
+        "message": "={{ $json.emailHtml }}",
+        "options": {}
+      },
+      "id": "c0ca484a-f2c3-460a-89d7-ff0eb5e4ca97",
+      "name": "Send Urgent Alert",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        576,
+        -96
+      ],
+      "webhookId": "63445572-8b02-4859-a752-5187c556294e",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "rrE3NdkcPfe1fgHO",
+          "name": "Gmail account 68"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "paul.wainaina@savethechildren.org",
+        "subject": "Weekly LAC funding opportunities digest",
+        "message": "={{ $json.emailHtml }}",
+        "options": {}
+      },
+      "id": "072263e3-1a18-451c-8383-b9d573b47d39",
+      "name": "Send Weekly Digest",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        576,
+        96
+      ],
+      "webhookId": "0240a5f3-494f-44a5-973c-80e794b706ed",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "rrE3NdkcPfe1fgHO",
+          "name": "Gmail account 68"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1eyjsTU2vCzuXWeNNbgNkj0SC5Wk-ij7eAX--yiPGjkY",
+          "mode": "list",
+          "cachedResultName": "Opportunities",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1eyjsTU2vCzuXWeNNbgNkj0SC5Wk-ij7eAX--yiPGjkY/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Opportunities",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1eyjsTU2vCzuXWeNNbgNkj0SC5Wk-ij7eAX--yiPGjkY/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "url": "={{$json.url}}",
+            "digest_sent": "true"
+          },
+          "matchingColumns": [
+            "url"
+          ],
+          "schema": [
+            {
+              "id": "name",
+              "displayName": "name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "issuing_org",
+              "displayName": "issuing_org",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "url",
+              "displayName": "url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "opening_date",
+              "displayName": "opening_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "deadline",
+              "displayName": "deadline",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "amount_range",
+              "displayName": "amount_range",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "instrument_type",
+              "displayName": "instrument_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "eligibility_geography",
+              "displayName": "eligibility_geography",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "eligible_applicant_type",
+              "displayName": "eligible_applicant_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "sector_focus",
+              "displayName": "sector_focus",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "eligibility_summary",
+              "displayName": "eligibility_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "date_added",
+              "displayName": "date_added",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "digest_sent",
+              "displayName": "digest_sent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "relevance_score",
+              "displayName": "relevance_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "team_action",
+              "displayName": "team_action",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "dc8f8915-d3b6-41c4-ba19-976940706012",
+      "name": "Mark as Sent",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        800,
+        96
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "1jF5vBxFR6c8xCLE",
+          "name": "Paul Google credential"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.is_lac }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ccf7ede6-f03f-4f1c-9bd9-a2194843b7cd",
+      "name": "Filter - LAC Only",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [
+        1184,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nif (items.length === 0) return [];\n\nconst rows = items.map(item => {\n  const j = item.json;\n  const deadlineLabel = j.deadline_was_estimated\n    ? '<span style=\"color:#999;\">Not specified</span>'\n    : (j.deadline_display || j.deadline || 'Not specified');\n  const region = j.is_lac ? 'LAC' : 'Global';\n  return `<tr>\n    <td>${j.name || ''}</td>\n    <td>${j.issuing_org || ''}</td>\n    <td>${region}</td>\n    <td>${deadlineLabel}</td>\n    <td>${j.instrument_type || ''}</td>\n    <td>${j.relevance_score || '\u2014'}</td>\n    <td><a href=\"${j.url}\">Link</a></td>\n  </tr>`;\n}).join('\\n');\n\nconst html = `<h3>Weekly Global Funding Opportunities Digest (${items.length})</h3>\n<p style=\"color:#666;font-size:12px;\">Sorted by completeness of info, then score (5 = best fit), then soonest deadline. Closed opportunities are excluded.</p>\n<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\" style=\"border-collapse:collapse;\">\n<tr><th>Name</th><th>Org</th><th>Region</th><th>Deadline</th><th>Instrument</th><th>Score</th><th>Link</th></tr>\n${rows}\n</table>`;\n\nreturn [{ json: { emailHtml: html } }];\n"
+      },
+      "id": "2722050c-34aa-4d92-b097-f964fd8c8ed7",
+      "name": "Build Global Digest Table",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1184,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "paulwainaina872@gmail.com",
+        "subject": "Weekly Save the Children global funding opportunities digest",
+        "message": "={{ $json.emailHtml }}",
+        "options": {}
+      },
+      "id": "f53d9d07-cca5-4001-851f-956f55aedfd2",
+      "name": "Send Global Team Digest",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1440,
+        -96
+      ],
+      "webhookId": "52dbc081-af80-43c4-b26e-9b4cd7e05abc",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "rrE3NdkcPfe1fgHO",
+          "name": "Gmail account 68"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Weekly Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Existing URLs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Existing URLs": {
+      "main": [
+        [
+          {
+            "node": "Build Discover Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Discover Request": {
+      "main": [
+        [
+          {
+            "node": "Discover Funding Calls",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Discover Funding Calls": {
+      "main": [
+        [
+          {
+            "node": "Looks Like Call?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Looks Like Call?": {
+      "main": [
+        [
+          {
+            "node": "Classify (Anthropic)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify (Anthropic)": {
+      "main": [
+        [
+          {
+            "node": "Parse Classification + Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Classification + Merge": {
+      "main": [
+        [
+          {
+            "node": "Normalize Deadline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Deadline": {
+      "main": [
+        [
+          {
+            "node": "Upsert to Google Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert to Google Sheet": {
+      "main": [
+        [
+          {
+            "node": "Get Undigested Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Undigested Rows": {
+      "main": [
+        [
+          {
+            "node": "filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "filter": {
+      "main": [
+        [
+          {
+            "node": "Sort Opportunities",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deadline Within 2 Weeks?": {
+      "main": [
+        [
+          {
+            "node": "Build Urgent Table",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Digest Table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Urgent Table": {
+      "main": [
+        [
+          {
+            "node": "Send Urgent Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Digest Table": {
+      "main": [
+        [
+          {
+            "node": "Send Weekly Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Urgent Alert": {
+      "main": [
+        [
+          {
+            "node": "Mark as Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Weekly Digest": {
+      "main": [
+        [
+          {
+            "node": "Mark as Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sort Opportunities": {
+      "main": [
+        [
+          {
+            "node": "Build Global Digest Table",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Filter - LAC Only",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter - LAC Only": {
+      "main": [
+        [
+          {
+            "node": "Deadline Within 2 Weeks?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Global Digest Table": {
+      "main": [
+        [
+          {
+            "node": "Send Global Team Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Global Team Digest": {
+      "main": [
+        [
+          {
+            "node": "Mark as Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "11a85977-e5fe-4ea5-aa8b-372919258e1e",
+  "meta": {
+    "instanceId": "ad522d3f8bb6f25b2c056e1ca82a87b3d27f34f51f1e0539bd85ff16c3cb0fca"
+  },
+  "nodeGroups": [],
+  "id": "piSERmmOpkLRTjly2",
+  "tags": []
+}

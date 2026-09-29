@@ -1,0 +1,33 @@
+[project]
+name = "callscout"
+version = "0.1.0"
+description = "Open-source scraper/extractor for funding calls: reliably pulls opening dates, deadlines, and amount ranges that generic scrapers (Firecrawl/Apify/Tavily) miss."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "httpx>=0.27",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "trafilatura>=1.8",
+    "pdfplumber>=0.11",
+    "dateparser>=1.2",
+    "pydantic>=2.6",
+    "typer>=0.12",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+]
+
+[project.optional-dependencies]
+browser = ["playwright>=1.43"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+callscout = "callscout.cli:app"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

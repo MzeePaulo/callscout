@@ -1,0 +1,19 @@
+# Render "Blueprint" spec -- lets you deploy with "New +" -> "Blueprint" and
+# pointing at this repo, instead of clicking through the manual web-service
+# setup. See DEPLOY.md for the manual steps and for what to do after deploy.
+services:
+  - type: web
+    name: callscout
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free      # $0/month -- see DEPLOY.md for what this trades off
+    envVars:
+      - key: CALLSCOUT_API_KEY
+        sync: false   # set manually in the Render dashboard, not committed
+      - key: ANTHROPIC_API_KEY
+        sync: false   # optional -- only needed for the LLM fallback
+      - key: CALLSCOUT_ALLOW_BROWSER
+        value: "false"   # keeps memory use low on the free plan's small RAM
+                          # allowance; set to "true" if you upgrade to a paid
+                          # plan and want the JS-rendering fallback back
+    healthCheckPath: /health
