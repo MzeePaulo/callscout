@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"><title>Loading...</title></head>
+<body>
+  <div id="app"></div>
+  <script>
+    // Simulates a client-side-rendered funder portal: the deadline and
+    // amount only exist in the DOM after this script runs, so a plain
+    // httpx GET (no JS execution) will see none of it.
+    document.getElementById('app').innerHTML =
+      '<h1>AFD Technical Assistance Window</h1>' +
+      '<p>Applications close on 2026-08-20. Awards range from EUR 20,000 to EUR 90,000.</p>';
+  </script>
+</body>
+</html>
